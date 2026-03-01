@@ -1,5 +1,10 @@
 # POE Trade Analyzer
 
+## Git Workflow (OBLIGATORIO)
+- **Repo**: github.com/Kreysh/PoeWeb.git (branch: main)
+- **Después de cada cambio**: SIEMPRE hacer `git add`, `git commit` con mensaje descriptivo, y `git push origin main`
+- No esperar a que el usuario lo pida — hacerlo automáticamente después de cada modificación de código
+
 ## Quick Reference
 - **Stack**: Next.js 15.1.6 + React 18 + TypeScript + Tailwind + Tremor + SQLite + ws
 - **Ports**: 3009 (HTTP proxy), 8447 (HTTPS)
