@@ -1,5 +1,5 @@
 import { GAMES, type GameId } from '@/lib/constants/games'
-import { tradeFetch, getPoesessid } from './client'
+import { tradeSearch, tradeFetch, getPoesessid } from './client'
 import type { ParsedItem } from './types'
 import { acquireToken, updateFromHeaders, abortableDelay } from './rate-limiter'
 import { parseSearchResults } from './item-parser'
@@ -57,53 +57,76 @@ export async function fetchAllSearchItems(
 ): Promise<{ items: ParsedItem[]; total: number; failedBatches: number }> {
   const config = GAMES[game]
 
-  // GET search results directly using the query ID from the URL
-  const searchUrl = `${config.tradeApiBase}${config.tradeSearchPath}/${encodeURIComponent(league)}/${queryId}`
-  console.log(`[Analyzer] GET search results: ${searchUrl}`)
+  // Step 1: GET the saved query definition from GGG
+  // GET /api/trade/search/{league}/{queryId} returns { id, query: {...}, sort: {...} }
+  // NOT result IDs — we must POST the query back to get fresh IDs.
+  const getUrl = `${config.tradeApiBase}${config.tradeSearchPath}/${encodeURIComponent(league)}/${queryId}`
+  console.log(`[Analyzer] GET query definition: ${getUrl}`)
 
-  const headers: Record<string, string> = {
+  const getHeaders: Record<string, string> = {
     'User-Agent': 'POETradeAnalyzer/1.0 (contact: poe-trade@comercialcmc.cc)',
     'Accept': 'application/json',
   }
-
   const poesessid = getPoesessid()
   if (poesessid) {
-    headers['Cookie'] = `POESESSID=${poesessid}`
+    getHeaders['Cookie'] = `POESESSID=${poesessid}`
   }
 
   const rateLimitKey = `search:${game}`
   await acquireToken(rateLimitKey, signal)
+  const getRes = await fetch(getUrl, { headers: getHeaders, signal })
+  updateFromHeaders(rateLimitKey, getRes.headers)
 
-  const searchRes = await fetch(searchUrl, { headers, signal })
-  updateFromHeaders(rateLimitKey, searchRes.headers)
-
-  if (searchRes.status === 429) {
+  if (getRes.status === 429) {
     throw new Error('Rate limited por GGG. Intenta de nuevo en unos segundos.')
   }
 
-  let searchData: any = null
+  // Read body as text first — avoids the stream-already-consumed bug
+  const getBodyText = await getRes.text()
 
-  if (searchRes.ok) {
-    try {
-      searchData = await searchRes.json()
-    } catch { /* parse failed */ }
-  }
-
-  if (!searchData || !Array.isArray(searchData.result)) {
-    let bodySnippet = ''
-    try { bodySnippet = await searchRes.text() } catch { /* already consumed */ }
-    console.error(`[Analyzer] GET failed. URL: ${searchUrl}, status: ${searchRes.status}, body: ${bodySnippet.slice(0, 300)}`)
-
+  if (!getRes.ok) {
+    const hint = getRes.status === 401
+      ? ' Para POE2, necesitas configurar tu POESESSID en Ajustes.'
+      : ' Los IDs de búsqueda de GGG expiran en pocos minutos.'
+    console.error(`[Analyzer] GET definition failed. status: ${getRes.status}, body: ${getBodyText.slice(0, 300)}`)
     throw new Error(
-      `La búsqueda no existe o expiró (${searchRes.status}). ` +
-      `Los IDs de búsqueda de GGG expiran en pocos minutos. ` +
+      `La búsqueda no existe o expiró (${getRes.status}).${hint} ` +
       `Crea una nueva búsqueda en pathofexile.com y pega la URL inmediatamente.`
     )
   }
 
+  let queryDefinition: any
+  try {
+    queryDefinition = JSON.parse(getBodyText)
+  } catch {
+    console.error(`[Analyzer] GET returned non-JSON. body: ${getBodyText.slice(0, 300)}`)
+    throw new Error('GGG devolvió una respuesta inesperada. Intenta de nuevo.')
+  }
+
+  if (!queryDefinition.query) {
+    console.error(`[Analyzer] GET response missing query field. body: ${getBodyText.slice(0, 300)}`)
+    throw new Error('No se pudo obtener la definición de búsqueda de GGG.')
+  }
+
+  // Step 2: POST the query to get fresh result IDs
+  console.log(`[Analyzer] POST re-search for league: ${league}`)
+  const searchPayload: any = { query: queryDefinition.query }
+  if (queryDefinition.sort) {
+    searchPayload.sort = queryDefinition.sort
+  }
+
+  let searchData: { id: string; result: string[]; total: number }
+  try {
+    searchData = await tradeSearch(game, league, searchPayload, signal)
+  } catch (err: any) {
+    console.error(`[Analyzer] POST re-search failed:`, err.message)
+    throw new Error(`Error al re-ejecutar la búsqueda: ${err.message}`)
+  }
+
   const allIds: string[] = searchData.result || []
   const total = searchData.total || allIds.length
-  const activeQueryId = queryId
+  // Use the fresh query ID from POST — tradeFetch needs matching ID
+  const activeQueryId = searchData.id
 
   if (allIds.length === 0) {
     return { items: [], total: 0, failedBatches: 0 }
