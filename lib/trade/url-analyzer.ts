@@ -57,14 +57,13 @@ export async function fetchAllSearchItems(
 ): Promise<{ items: ParsedItem[]; total: number; failedBatches: number }> {
   const config = GAMES[game]
 
-  // Replay the search via POST to get result IDs directly
-  const replayUrl = `${config.tradeApiBase}${config.tradeSearchPath}/${encodeURIComponent(league)}/${queryId}`
-  console.log(`[Analyzer] POST replay search: ${replayUrl}`)
+  // GET search results directly using the query ID from the URL
+  const searchUrl = `${config.tradeApiBase}${config.tradeSearchPath}/${encodeURIComponent(league)}/${queryId}`
+  console.log(`[Analyzer] GET search results: ${searchUrl}`)
 
   const headers: Record<string, string> = {
     'User-Agent': 'POETradeAnalyzer/1.0 (contact: poe-trade@comercialcmc.cc)',
     'Accept': 'application/json',
-    'Content-Type': 'application/json',
   }
 
   const poesessid = getPoesessid()
@@ -75,29 +74,25 @@ export async function fetchAllSearchItems(
   const rateLimitKey = `search:${game}`
   await acquireToken(rateLimitKey, signal)
 
-  const searchRes = await fetch(replayUrl, {
-    method: 'POST',
-    headers,
-    signal,
-  })
+  const searchRes = await fetch(searchUrl, { headers, signal })
   updateFromHeaders(rateLimitKey, searchRes.headers)
 
   if (searchRes.status === 429) {
     throw new Error('Rate limited por GGG. Intenta de nuevo en unos segundos.')
   }
 
-  let searchResult: any = null
+  let searchData: any = null
 
   if (searchRes.ok) {
     try {
-      searchResult = await searchRes.json()
+      searchData = await searchRes.json()
     } catch { /* parse failed */ }
   }
 
-  if (!searchResult || !Array.isArray(searchResult.result)) {
+  if (!searchData || !Array.isArray(searchData.result)) {
     let bodySnippet = ''
     try { bodySnippet = await searchRes.text() } catch { /* already consumed */ }
-    console.error(`[Analyzer] POST replay failed. URL: ${replayUrl}, status: ${searchRes.status}, body: ${bodySnippet.slice(0, 300)}`)
+    console.error(`[Analyzer] GET failed. URL: ${searchUrl}, status: ${searchRes.status}, body: ${bodySnippet.slice(0, 300)}`)
 
     throw new Error(
       `La búsqueda no existe o expiró (${searchRes.status}). ` +
@@ -106,9 +101,9 @@ export async function fetchAllSearchItems(
     )
   }
 
-  const allIds: string[] = searchResult.result || []
-  const total = searchResult.total || allIds.length
-  const activeQueryId = searchResult.id || queryId
+  const allIds: string[] = searchData.result || []
+  const total = searchData.total || allIds.length
+  const activeQueryId = queryId
 
   if (allIds.length === 0) {
     return { items: [], total: 0, failedBatches: 0 }
